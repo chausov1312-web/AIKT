@@ -441,7 +441,7 @@ def main():
             if "сканирование" in mode.lower():
                 attack = scan_and_attack_mode(network_info)
                 if attack:
-                    confirm_and_start_attack(attack)
+                    confirm_and_start_attack(attack, network_info)
                     # После завершения атаки спрашиваем, что делать дальше
                     continue_choice = run_fzf(["🔄 Начать новую атаку", "❌ Выход"], "Что делать дальше? →")
                     if not continue_choice or "выход" in continue_choice.lower():
@@ -450,7 +450,7 @@ def main():
                     # Иначе начинаем заново
             else:
                 attack = manual_mode(network_info)
-                confirm_and_start_attack(attack)
+                confirm_and_start_attack(attack, network_info)
                 # После завершения атаки спрашиваем, что делать дальше
                 continue_choice = run_fzf(["🔄 Начать новую атаку", "❌ Выход"], "Что делать дальше? →")
                 if not continue_choice or "выход" in continue_choice.lower():
